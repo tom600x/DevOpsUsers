@@ -1,0 +1,60 @@
+# Output directory and generated files
+output/
+*.csv
+
+# PowerShell related files
+*.ps1xml
+*.psd1
+*.psm1
+# Exclude compiled modules
+bin/
+obj/
+
+# PowerShell execution policy and profile files
+profile.ps1
+Microsoft.PowerShell_profile.ps1
+Microsoft.VSCode_profile.ps1
+
+# PowerShell log files
+*.log
+*.txt
+
+# PowerShell cache and temporary files
+.vscode/
+*.tmp
+*.temp
+
+# Security sensitive files
+*.key
+*.token
+*.pat
+config.json
+secrets.json
+appsettings.json
+.env
+
+# Windows specific
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Visual Studio / VSCode
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# JetBrains
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Backup files
+*.bak
+*.backup
+*~
