@@ -89,9 +89,14 @@ Your PAT token must have the following permissions:
 .\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here"
 ```
 
-### With Custom Output Directory
+### With Custom Output Directory and Logging
 ```powershell
-.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -OutputPath "C:\Reports"
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -OutputPath "C:\Reports" -LogPath "C:\Logs\devops-export.log"
+```
+
+### With Custom Retry Settings
+```powershell
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -MaxRetries 5
 ```
 
 ### With Verbose Logging
@@ -106,6 +111,8 @@ Your PAT token must have the following permissions:
 | `OrganizationUrl` | Yes | Full Azure DevOps organization URL | `https://dev.azure.com/contoso` |
 | `PersonalAccessToken` | Yes | PAT token with required permissions | `abcd1234...` |
 | `OutputPath` | No | Directory for output files (default: `.\output`) | `C:\Reports` |
+| `LogPath` | No | Optional log file path for detailed logging | `C:\Logs\export.log` |
+| `MaxRetries` | No | Maximum retry attempts for API calls (default: 3) | `5` |
 
 ## Output
 
@@ -128,9 +135,34 @@ Bob Johnson,bob.johnson@contoso.com,"No project assignments",Basic
 ```
 
 ### File Naming Convention
-- Format: `devops-users-YYYY-MM-DD.csv`
-- Example: `devops-users-2025-10-17.csv`
+- Format: `devops-users-YYYY-MM-DD-HHMM.csv`
+- Example: `devops-users-2025-10-20-1430.csv`
 - Location: `output` directory (or specified `OutputPath`)
+
+## New Features
+
+### Enhanced Error Handling & Retry Logic
+- **Automatic Retry**: API calls automatically retry with exponential backoff
+- **Rate Limiting**: Handles Azure DevOps rate limiting (HTTP 429) gracefully
+- **Configurable Retries**: Set maximum retry attempts with `-MaxRetries` parameter
+- **Detailed Logging**: Comprehensive logging with timestamps and severity levels
+
+### Progress Reporting
+- **Visual Progress**: Shows progress bar during project processing
+- **Detailed Status**: Displays current project being processed
+- **Performance Monitoring**: Tracks processing time and completion percentage
+
+### Improved Data Safety
+- **Null Safety**: Robust handling of missing or null user data
+- **Data Validation**: Validates all user fields before export
+- **Graceful Degradation**: Continues processing even if some data is unavailable
+- **Memory Cleanup**: Automatically clears sensitive data from memory
+
+### Advanced Logging
+- **File Logging**: Optional log file output with `-LogPath` parameter
+- **Severity Levels**: INFO, WARNING, ERROR, SUCCESS log levels
+- **Timestamps**: All log entries include precise timestamps
+- **Color Coding**: Console output uses colors for different severity levels
 
 ## Common License Levels
 
@@ -162,6 +194,11 @@ Bob Johnson,bob.johnson@contoso.com,"No project assignments",Basic
 - ✅ Check if corporate firewall blocks Azure DevOps
 - ✅ Test: `Test-NetConnection dev.azure.com -Port 443`
 
+**Error**: Rate limiting (HTTP 429)
+- ✅ Script automatically handles rate limiting with retry logic
+- ✅ Increase `-MaxRetries` parameter if needed
+- ✅ Run during off-peak hours for better performance
+
 ### Script Execution Issues
 
 **Error**: `Execution Policy` restrictions
@@ -174,9 +211,10 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
 **Error**: Large organizations timeout
-- The script handles pagination automatically
-- Use `-Verbose` flag to monitor progress
-- Consider running during off-peak hours
+- ✅ Script now includes automatic retry logic and progress reporting
+- ✅ Use `-Verbose` flag to monitor detailed progress
+- ✅ Consider using `-LogPath` to save detailed logs
+- ✅ Increase `-MaxRetries` for unreliable networks
 
 ### Data Issues
 
@@ -187,6 +225,10 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 **Duplicate users in different teams**:
 - Script automatically deduplicates users within projects
 - Users appear once per organization in the output
+
+**Missing user information**:
+- Script now handles missing display names, emails, and license info gracefully
+- Missing data is replaced with descriptive placeholders
 
 ## API Endpoints Used
 
@@ -222,5 +264,15 @@ For issues or questions:
 3. Verify PAT token permissions and expiration
 
 ## Version History
+
+- **v2.0**: Enhanced version with major improvements
+  - ✅ **Retry Logic**: Automatic retry with exponential backoff for API failures
+  - ✅ **Rate Limiting**: Handles Azure DevOps rate limiting gracefully
+  - ✅ **Progress Reporting**: Visual progress bars for long operations
+  - ✅ **Enhanced Logging**: Timestamped logging with severity levels and optional file output
+  - ✅ **Null Safety**: Robust handling of missing or invalid user data
+  - ✅ **Memory Security**: Automatic cleanup of sensitive data
+  - ✅ **Parameter Validation**: Enhanced input validation with helpful error messages
+  - ✅ **Improved Timestamps**: More precise timestamps in filenames (includes time)
 
 - **v1.0**: Initial release with basic user and project reporting
