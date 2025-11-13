@@ -17,7 +17,14 @@ param(
     
     [Parameter(Mandatory = $false, HelpMessage = "Maximum number of retry attempts for API calls")]
     [ValidateRange(1, 10)]
-    [int]$MaxRetries = 3
+    [int]$MaxRetries = 3,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Skip pagination and use only first batch of users (for large orgs with API issues)")]
+    [switch]$SkipPagination,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Maximum number of users to retrieve (0 = no limit)")]
+    [ValidateRange(0, 10000)]
+    [int]$MaxUsers = 0
 )
 
 # Function to write log messages with timestamps
@@ -118,33 +125,57 @@ function Invoke-DevOpsRestMethod {
 function Get-UserEntitlements {
     param(
         [string]$OrgUrl,
-        [hashtable]$Headers
+        [hashtable]$Headers,
+        [bool]$SkipPagination = $false,
+        [int]$MaxUsers = 0
     )
     
     $users = @()
     $continuationToken = $null
+    $totalRetrieved = 0
     
     do {
+        # Check if we've hit the max users limit
+        if ($MaxUsers -gt 0 -and $totalRetrieved -ge $MaxUsers) {
+            Write-Log "Reached maximum user limit of $MaxUsers. Stopping retrieval." "INFO"
+            break
+        }
+        
         $uri = if ($continuationToken) {
             "$OrgUrl/_apis/userentitlements?api-version=7.0&continuationToken=$continuationToken"
         } else {
             "$OrgUrl/_apis/userentitlements?api-version=7.0"
         }
         
-        $response = Invoke-DevOpsRestMethod -Uri $uri -Headers $Headers
-        
-        if ($response.members) {
-            $users += $response.members
-            $continuationToken = $response.continuationToken
+        try {
+            $response = Invoke-DevOpsRestMethod -Uri $uri -Headers $Headers
             
-            Write-Log "Retrieved $($response.members.Count) users. Total so far: $($users.Count)" "INFO"
+            if ($response.members) {
+                $users += $response.members
+                $totalRetrieved += $response.members.Count
+                $continuationToken = $response.continuationToken
+                
+                Write-Log "Retrieved $($response.members.Count) users. Total so far: $($users.Count)" "INFO"
+                
+                # If SkipPagination is enabled, only get the first batch
+                if ($SkipPagination) {
+                    Write-Log "SkipPagination enabled - stopping after first batch of users" "INFO"
+                    break
+                }
+            }
+            else {
+                Write-Log "No users found in response" "WARNING"
+                break
+            }
         }
-        else {
-            Write-Log "No users found in response" "WARNING"
+        catch {
+            # If pagination fails, log the error and continue with what we have
+            Write-Log "Pagination failed: $($_.Exception.Message)" "WARNING"
+            Write-Log "Continuing with $($users.Count) users retrieved so far" "INFO"
             break
         }
         
-    } while ($continuationToken)
+    } while ($continuationToken -and -not $SkipPagination)
     
     return $users
 }
@@ -232,9 +263,20 @@ try {
     
     # Get all users
     Write-Log "Retrieving user entitlements..." "INFO"
+    if ($SkipPagination) {
+        Write-Log "SkipPagination mode enabled - will retrieve only first batch to avoid API issues" "INFO"
+    }
+    if ($MaxUsers -gt 0) {
+        Write-Log "Maximum users limit set to: $MaxUsers" "INFO"
+    }
+    
     $vsaexOrgUrl = $orgUrl -replace "https://dev\.azure\.com/", "https://vsaex.dev.azure.com/"
-    $users = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers
+    $users = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $SkipPagination -MaxUsers $MaxUsers
     Write-Log "Found $($users.Count) users" "SUCCESS"
+    
+    if ($SkipPagination -and $users.Count -gt 0) {
+        Write-Log "Note: SkipPagination was used - there may be more users in the organization" "WARNING"
+    }
     
     # Get all projects
     Write-Log "Retrieving projects..." "INFO"
