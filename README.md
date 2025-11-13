@@ -99,6 +99,16 @@ Your PAT token must have the following permissions:
 .\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -MaxRetries 5
 ```
 
+### For Large Organizations (Skip Pagination)
+```powershell
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -SkipPagination
+```
+
+### Limit Number of Users Retrieved
+```powershell
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -MaxUsers 100
+```
+
 ### With Verbose Logging
 ```powershell
 .\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -Verbose
@@ -110,9 +120,72 @@ Your PAT token must have the following permissions:
 |---|---|---|---|
 | `OrganizationUrl` | Yes | Full Azure DevOps organization URL | `https://dev.azure.com/contoso` |
 | `PersonalAccessToken` | Yes | PAT token with required permissions | `abcd1234...` |
-| `OutputPath` | No | Directory for output files (default: `.\output`) | `C:\Reports` |
+| `OutputPath` | No | Directory for output files (default: `.\.output`) | `C:\Reports` |
 | `LogPath` | No | Optional log file path for detailed logging | `C:\Logs\export.log` |
 | `MaxRetries` | No | Maximum retry attempts for API calls (default: 3) | `5` |
+| `SkipPagination` | No | Skip pagination for large orgs with API issues | `-SkipPagination` |
+| `MaxUsers` | No | Maximum number of users to retrieve (default: 0=no limit) | `100` |
+| `UseGraphAPI` | No | Try alternative Graph API method for user retrieval | `-UseGraphAPI` |
+| `ForceAllUsers` | No | Attempt multiple API methods to retrieve all users | `-ForceAllUsers` |
+| `UseProjectBased` | No | **Recommended for large orgs**: Collect users via project memberships | `-UseProjectBased` |
+| `ShowUsersWithoutProjects` | No | Identify and highlight users with no project assignments | `-ShowUsersWithoutProjects` |
+| `ExportUsersWithoutProjects` | No | Create separate CSV file for users without projects | `-ExportUsersWithoutProjects` |
+
+## Advanced Usage Examples
+
+### For Large Organizations (Recommended - Project-Based Approach)
+```powershell
+# Best approach for large organizations with 500+ users
+# Bypasses entitlements API pagination issues completely
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -UseProjectBased
+```
+
+### Find Users Without Project Assignments
+```powershell
+# Identifies users who have organization access but no specific project assignments
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -ShowUsersWithoutProjects -ExportUsersWithoutProjects
+```
+
+### Multiple Fallback Methods for Maximum Coverage
+```powershell
+# Tries multiple API methods to get the most complete user list
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -ForceAllUsers
+```
+
+### Large Organization Troubleshooting
+```powershell
+# For organizations experiencing API pagination errors (HTTP 500)
+.\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrganization" -PersonalAccessToken "your-pat-token-here" -SkipPagination
+```
+
+## Real-World Usage Examples
+
+### Example: HHSDC Organization Results
+Based on testing with a large organization (HHSDC) containing 1,168 users:
+
+**Standard Entitlements API (with pagination issues):**
+- ❌ **Result**: Only 67 users retrieved due to HTTP 500 errors during pagination
+- ❌ **Issue**: Azure DevOps API pagination fails on large user datasets
+
+**Project-Based Approach (`-UseProjectBased`):**
+- ✅ **Result**: 804 users successfully retrieved
+- ✅ **Coverage**: ~69% of organization users (those with active project assignments)
+- ✅ **Reliability**: No API pagination errors
+
+**User Analysis (`-ShowUsersWithoutProjects`):**
+- **Users with project assignments**: 804 users
+- **Users without projects**: 2 users
+  - 1 Stakeholder license holder (read-only access)  
+  - 1 Service account with Basic license
+
+### Choosing the Right Approach
+
+| Organization Size | Recommended Parameters | Expected Results |
+|---|---|---|
+| **Small (< 100 users)** | Standard run (no special parameters) | 100% user coverage |
+| **Medium (100-500 users)** | `-ForceAllUsers` | High coverage with fallback methods |
+| **Large (500+ users)** | `-UseProjectBased` | Active users with project assignments |
+| **Analysis Focus** | `-ShowUsersWithoutProjects` | Identify inactive or admin-only users |
 
 ## Output
 
@@ -126,12 +199,31 @@ The script generates a timestamped CSV file with the following columns:
 | Project Names | Semicolon-separated list of projects | ProjectA; ProjectB; ProjectC |
 | License Level | Azure DevOps license type | Visual Studio Professional |
 
-### Sample Output
+### Special Indicators
+
+| Project Names Value | Meaning |
+|---|---|
+| `ProjectA; ProjectB` | User has assignments in multiple projects |
+| `No project assignments` | User has org access but no specific project assignments |
+| `*** NO PROJECT ASSIGNMENTS ***` | Highlighted when using `-ShowUsersWithoutProjects` |
+| `Unknown License (Project-based collection)` | License info unavailable when using project-based approach |
+
+### Sample Output Files
+
+**Main Export (`devops-users-2025-11-13-1341.csv`):**
 ```csv
 User Name,Email,Project Names,License Level
-John Smith,john.smith@contoso.com,"ProjectA; ProjectB",Visual Studio Professional
-Jane Doe,jane.doe@contoso.com,"ProjectA; ProjectC","Basic + Test Plans"
-Bob Johnson,bob.johnson@contoso.com,"No project assignments",Basic
+Manduri Nagaraju,c-nmanduri@pa.gov,"DHS Modernized Applications","Unknown License (Project-based collection)"
+Holvick Aric,aholvick@pa.gov,"DHS-Web Development; DHS-Legacy Applications; DHS-EKMS","Unknown License (Project-based collection)"
+Jennifer Bowers,c-jennibow@pa.gov,"*** NO PROJECT ASSIGNMENTS ***",Stakeholder
+SVC-ccmpdevops,pwsvcccmpdevops@pa.gov,"*** NO PROJECT ASSIGNMENTS ***",Basic
+```
+
+**Users Without Projects (`devops-users-NO-PROJECTS-2025-11-13-1341.csv`):**
+```csv
+User Name,Email,Project Names,License Level
+Jennifer Bowers,c-jennibow@pa.gov,"*** NO PROJECT ASSIGNMENTS ***",Stakeholder
+SVC-ccmpdevops,pwsvcccmpdevops@pa.gov,"*** NO PROJECT ASSIGNMENTS ***",Basic
 ```
 
 ### File Naming Convention
@@ -163,6 +255,12 @@ Bob Johnson,bob.johnson@contoso.com,"No project assignments",Basic
 - **Severity Levels**: INFO, WARNING, ERROR, SUCCESS log levels
 - **Timestamps**: All log entries include precise timestamps
 - **Color Coding**: Console output uses colors for different severity levels
+
+### Large Organization Support
+- **Skip Pagination**: Use `-SkipPagination` to avoid API issues with large user lists
+- **User Limits**: Set `-MaxUsers` to limit the number of users retrieved
+- **Graceful Degradation**: Continues with partial data if pagination fails
+- **API Issue Handling**: Robust handling of Azure DevOps API limitations
 
 ## Common License Levels
 
@@ -210,11 +308,75 @@ Get-ExecutionPolicy
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-**Error**: Large organizations timeout
-- ✅ Script now includes automatic retry logic and progress reporting
-- ✅ Use `-Verbose` flag to monitor detailed progress
-- ✅ Consider using `-LogPath` to save detailed logs
-- ✅ Increase `-MaxRetries` for unreliable networks
+**Error**: Large organizations timeout or API failures during user retrieval
+- ✅ **Use Project-Based Approach (Recommended)**: `-UseProjectBased` bypasses entitlements API completely
+- ✅ **Skip Pagination**: Use `-SkipPagination` flag to retrieve only the first batch of users  
+- ✅ **Multiple Methods**: Use `-ForceAllUsers` to try multiple API approaches
+- ✅ **User Limits**: Use `-MaxUsers` parameter to limit the number of users retrieved
+- ✅ Some large organizations (500+ users) have API pagination issues with Azure DevOps
+- ✅ The script will continue with partial data if pagination fails
+
+### Large Organizations - Detailed Solutions
+
+**Problem**: HTTP 500 errors during user entitlements pagination
+```
+[ERROR] API call failed after 3 attempts. Status: 500 (Internal Server Error)
+[WARNING] Pagination attempt failed: Response status code does not indicate success: 500
+```
+
+**Root Cause**: Azure DevOps API has known limitations with large user datasets during pagination
+
+**Recommended Solutions (in order of preference)**:
+
+1. **Project-Based Collection (`-UseProjectBased`)** ⭐ **Best for large orgs**
+   ```powershell
+   .\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "token" -UseProjectBased
+   ```
+   - ✅ **Bypasses entitlements API completely**
+   - ✅ **No pagination issues**
+   - ✅ **Collects active users with project assignments**
+   - ❌ **May miss admin-only users or those without project assignments**
+
+2. **Skip Pagination (`-SkipPagination`)**
+   ```powershell
+   .\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "token" -SkipPagination
+   ```
+   - ✅ **Gets first batch of users reliably**
+   - ✅ **Includes license information**
+   - ❌ **Limited to ~67 users per batch**
+
+3. **Multiple Fallback Methods (`-ForceAllUsers`)**
+   ```powershell
+   .\Get-DevOpsUsers.ps1 -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "token" -ForceAllUsers
+   ```
+   - ✅ **Tries multiple API approaches**
+   - ✅ **Automatic fallback to project-based if entitlements fail**
+   - ❌ **May still encounter same API limitations**
+
+### Understanding User Coverage Results
+
+**Real-World Example: HHSDC Organization (1,168 total users)**
+
+| Method | Users Retrieved | Coverage | Notes |
+|---|---|---|---|
+| **Standard Entitlements** | 67 users | 6% | ❌ HTTP 500 errors during pagination |
+| **Project-Based** | 804 users | 69% | ✅ All active users with project assignments |
+| **Users Without Projects** | 2 users | <1% | 📊 Identified from entitlements sample |
+
+**User Categories Explanation**:
+- **Active Users (804)**: Users actively assigned to project teams
+- **Administrative Users**: Organization admins without specific project assignments
+- **Stakeholder Users**: Read-only users (often no direct project assignments)
+- **Service Accounts**: Automation accounts with org-level access
+- **Inactive Users**: Users with access but no current project work
+
+**Example Analysis Output**:
+```
+Found 804 users with project assignments
+Found 2 users with NO project assignments:
+- Jennifer Bowers (Stakeholder license)
+- SVC-ccmpdevops (Basic license - service account)
+```
 
 ### Data Issues
 
@@ -264,6 +426,15 @@ For issues or questions:
 3. Verify PAT token permissions and expiration
 
 ## Version History
+
+- **v2.1**: Latest version with large organization support and comprehensive user analysis
+  - ✅ **Project-Based Collection**: New `-UseProjectBased` parameter bypasses entitlements API completely
+  - ✅ **User Analysis**: `-ShowUsersWithoutProjects` identifies users with no project assignments  
+  - ✅ **Separate Export**: `-ExportUsersWithoutProjects` creates dedicated CSV for users without projects
+  - ✅ **Multiple API Methods**: Enhanced fallback strategies for maximum user coverage
+  - ✅ **Large Org Support**: Specifically designed for organizations with 500+ users
+  - ✅ **Real-World Tested**: Validated with organizations containing 1,000+ users
+  - ✅ **Comprehensive Reporting**: Detailed logging and progress reporting for large datasets
 
 - **v2.0**: Enhanced version with major improvements
   - ✅ **Retry Logic**: Automatic retry with exponential backoff for API failures

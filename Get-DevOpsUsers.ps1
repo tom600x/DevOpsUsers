@@ -24,7 +24,22 @@ param(
     
     [Parameter(Mandatory = $false, HelpMessage = "Maximum number of users to retrieve (0 = no limit)")]
     [ValidateRange(0, 10000)]
-    [int]$MaxUsers = 0
+    [int]$MaxUsers = 0,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Use alternative Graph API method to retrieve all users")]
+    [switch]$UseGraphAPI,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Force retrieve all users using multiple API attempts")]
+    [switch]$ForceAllUsers,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Use project-based approach to collect all users (bypasses entitlements API)")]
+    [switch]$UseProjectBased,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Show users with no project assignments by comparing entitlements vs project-based data")]
+    [switch]$ShowUsersWithoutProjects,
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Export separate CSV file containing only users without project assignments")]
+    [switch]$ExportUsersWithoutProjects
 )
 
 # Function to write log messages with timestamps
@@ -121,18 +136,241 @@ function Invoke-DevOpsRestMethod {
     }
 }
 
+# Function to get users via Graph API method (alternative approach)
+function Get-UsersViaGraph {
+    param(
+        [string]$OrgUrl,
+        [hashtable]$Headers
+    )
+    
+    try {
+        Write-Log "Attempting to retrieve users via Graph API method..." "INFO"
+        $graphUri = "$OrgUrl/_apis/graph/users?api-version=7.0"
+        $response = Invoke-DevOpsRestMethod -Uri $graphUri -Headers $Headers
+        
+        if ($response.value) {
+            Write-Log "Graph API retrieved $($response.value.Count) users" "SUCCESS"
+            return $response.value
+        }
+        else {
+            Write-Log "No users found via Graph API" "WARNING"
+            return @()
+        }
+    }
+    catch {
+        Write-Log "Graph API method failed: $($_.Exception.Message)" "WARNING"
+        return @()
+    }
+}
+
+# Function to get comprehensive user data from projects (bypasses entitlements API)
+function Get-AllUsersViaProjects {
+    param(
+        [string]$OrgUrl,
+        [hashtable]$Headers,
+        [array]$Projects
+    )
+    
+    Write-Log "Using project-based approach to collect all users..." "INFO"
+    $allUsers = @{}
+    $totalProjects = $Projects.Count
+    
+    for ($i = 0; $i -lt $totalProjects; $i++) {
+        $project = $Projects[$i]
+        $percentComplete = [math]::Round(($i / $totalProjects) * 100, 1)
+        
+        Write-Progress -Activity "Scanning Projects for Users" -Status "Project: $($project.name) ($($i + 1)/$totalProjects)" -PercentComplete $percentComplete
+        
+        try {
+            # Get all teams in the project
+            $teamsUri = "$OrgUrl/_apis/projects/$($project.id)/teams?api-version=7.0"
+            $teamsResponse = Invoke-DevOpsRestMethod -Uri $teamsUri -Headers $Headers
+            
+            if ($teamsResponse.value) {
+                foreach ($team in $teamsResponse.value) {
+                    try {
+                        # Get team members
+                        $membersUri = "$OrgUrl/_apis/projects/$($project.id)/teams/$($team.id)/members?api-version=7.0"
+                        $membersResponse = Invoke-DevOpsRestMethod -Uri $membersUri -Headers $Headers
+                        
+                        if ($membersResponse.value) {
+                            foreach ($member in $membersResponse.value) {
+                                if ($member.identity.id -and -not $allUsers.ContainsKey($member.identity.id)) {
+                                    $allUsers[$member.identity.id] = @{
+                                        id = $member.identity.id
+                                        user = @{
+                                            displayName = $member.identity.displayName
+                                            mailAddress = $member.identity.uniqueName
+                                            principalName = $member.identity.uniqueName
+                                        }
+                                        accessLevel = @{
+                                            licenseDisplayName = "Unknown License (Project-based collection)"
+                                        }
+                                        projects = @()
+                                    }
+                                }
+                                
+                                # Add project to user's project list
+                                if ($allUsers.ContainsKey($member.identity.id)) {
+                                    if ($allUsers[$member.identity.id].projects -notcontains $project.name) {
+                                        $allUsers[$member.identity.id].projects += $project.name
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Log "Warning: Could not get members for team '$($team.name)' in project '$($project.name)': $($_.Exception.Message)" "WARNING"
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Log "Warning: Could not process project '$($project.name)': $($_.Exception.Message)" "WARNING"
+        }
+    }
+    
+    Write-Progress -Activity "Scanning Projects for Users" -Completed
+    
+    # Convert hashtable to array format expected by rest of script
+    $userList = @()
+    foreach ($userId in $allUsers.Keys) {
+        $userList += $allUsers[$userId]
+    }
+    
+    Write-Log "Project-based collection found $($userList.Count) unique users across $totalProjects projects" "SUCCESS"
+    return $userList
+}
+
+# Function to get users via project memberships (alternative approach)
+function Get-UsersViaProjects {
+    param(
+        [string]$OrgUrl,
+        [hashtable]$Headers,
+        [array]$Projects
+    )
+    
+    Write-Log "Attempting to collect users via project memberships..." "INFO"
+    $allUsers = @{}
+    
+    foreach ($project in $Projects) {
+        try {
+            $members = Get-ProjectMembers -OrgUrl $OrgUrl -ProjectId $project.id -Headers $Headers
+            foreach ($member in $members) {
+                if ($member.identity.id -and -not $allUsers.ContainsKey($member.identity.id)) {
+                    $allUsers[$member.identity.id] = @{
+                        id = $member.identity.id
+                        displayName = $member.identity.displayName
+                        uniqueName = $member.identity.uniqueName
+                        mailAddress = $member.identity.uniqueName
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Log "Failed to get members for project $($project.name): $($_.Exception.Message)" "WARNING"
+        }
+    }
+    
+    $userList = $allUsers.Values
+    Write-Log "Collected $($userList.Count) unique users from project memberships" "SUCCESS"
+    return $userList
+}
+
+# Function to get comprehensive user data from projects (bypasses entitlements API)
+function Get-AllUsersViaProjects {
+    param(
+        [string]$OrgUrl,
+        [hashtable]$Headers,
+        [array]$Projects
+    )
+    
+    Write-Log "Using comprehensive project-based approach to collect all users..." "INFO"
+    $allUsers = @{}
+    $totalProjects = $Projects.Count
+    
+    for ($i = 0; $i -lt $totalProjects; $i++) {
+        $project = $Projects[$i]
+        $percentComplete = [math]::Round(($i / $totalProjects) * 100, 1)
+        
+        Write-Progress -Activity "Scanning Projects for Users" -Status "Project: $($project.name) ($($i + 1)/$totalProjects)" -PercentComplete $percentComplete
+        
+        try {
+            # Get all teams in the project
+            $teamsUri = "$OrgUrl/_apis/projects/$($project.id)/teams?api-version=7.0"
+            $teamsResponse = Invoke-DevOpsRestMethod -Uri $teamsUri -Headers $Headers
+            
+            if ($teamsResponse.value) {
+                foreach ($team in $teamsResponse.value) {
+                    try {
+                        # Get team members
+                        $membersUri = "$OrgUrl/_apis/projects/$($project.id)/teams/$($team.id)/members?api-version=7.0"
+                        $membersResponse = Invoke-DevOpsRestMethod -Uri $membersUri -Headers $Headers
+                        
+                        if ($membersResponse.value) {
+                            foreach ($member in $membersResponse.value) {
+                                if ($member.identity.id -and -not $allUsers.ContainsKey($member.identity.id)) {
+                                    $allUsers[$member.identity.id] = @{
+                                        id = $member.identity.id
+                                        user = @{
+                                            displayName = $member.identity.displayName
+                                            mailAddress = $member.identity.uniqueName
+                                            principalName = $member.identity.uniqueName
+                                        }
+                                        accessLevel = @{
+                                            licenseDisplayName = "Unknown License (Project-based collection)"
+                                        }
+                                        projects = @()
+                                    }
+                                }
+                                
+                                # Add project to user's project list
+                                if ($allUsers.ContainsKey($member.identity.id)) {
+                                    if ($allUsers[$member.identity.id].projects -notcontains $project.name) {
+                                        $allUsers[$member.identity.id].projects += $project.name
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Log "Warning: Could not get members for team '$($team.name)' in project '$($project.name)': $($_.Exception.Message)" "WARNING"
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Log "Warning: Could not process project '$($project.name)': $($_.Exception.Message)" "WARNING"
+        }
+    }
+    
+    Write-Progress -Activity "Scanning Projects for Users" -Completed
+    
+    # Convert hashtable to array format expected by rest of script
+    $userList = @()
+    foreach ($userId in $allUsers.Keys) {
+        $userList += $allUsers[$userId]
+    }
+    
+    Write-Log "Comprehensive project-based collection found $($userList.Count) unique users across $totalProjects projects" "SUCCESS"
+    return $userList
+}
+
 # Function to get all users with their entitlements
 function Get-UserEntitlements {
     param(
         [string]$OrgUrl,
         [hashtable]$Headers,
         [bool]$SkipPagination = $false,
-        [int]$MaxUsers = 0
+        [int]$MaxUsers = 0,
+        [bool]$ForceAllUsers = $false
     )
     
     $users = @()
     $continuationToken = $null
     $totalRetrieved = 0
+    $retryCount = 0
+    $maxPaginationRetries = if ($ForceAllUsers) { 10 } else { 3 }
     
     do {
         # Check if we've hit the max users limit
@@ -157,6 +395,9 @@ function Get-UserEntitlements {
                 
                 Write-Log "Retrieved $($response.members.Count) users. Total so far: $($users.Count)" "INFO"
                 
+                # Reset retry count on successful call
+                $retryCount = 0
+                
                 # If SkipPagination is enabled, only get the first batch
                 if ($SkipPagination) {
                     Write-Log "SkipPagination enabled - stopping after first batch of users" "INFO"
@@ -169,13 +410,21 @@ function Get-UserEntitlements {
             }
         }
         catch {
-            # If pagination fails, log the error and continue with what we have
-            Write-Log "Pagination failed: $($_.Exception.Message)" "WARNING"
-            Write-Log "Continuing with $($users.Count) users retrieved so far" "INFO"
-            break
+            $retryCount++
+            Write-Log "Pagination attempt $retryCount failed: $($_.Exception.Message)" "WARNING"
+            
+            if ($ForceAllUsers -and $retryCount -le $maxPaginationRetries -and $continuationToken) {
+                Write-Log "ForceAllUsers enabled - retrying pagination with delay..." "INFO"
+                Start-Sleep -Seconds (2 * $retryCount)
+                continue
+            }
+            else {
+                Write-Log "Pagination failed after $retryCount attempts. Continuing with $($users.Count) users retrieved so far" "WARNING"
+                break
+            }
         }
         
-    } while ($continuationToken -and -not $SkipPagination)
+    } while ($continuationToken -and -not $SkipPagination -and $retryCount -le $maxPaginationRetries)
     
     return $users
 }
@@ -261,7 +510,7 @@ try {
     $headers = Get-AuthHeader -Pat $PersonalAccessToken
     Write-Log "Authentication header created successfully" "INFO"
     
-    # Get all users
+    # Get all users using the best available method
     Write-Log "Retrieving user entitlements..." "INFO"
     if ($SkipPagination) {
         Write-Log "SkipPagination mode enabled - will retrieve only first batch to avoid API issues" "INFO"
@@ -269,13 +518,124 @@ try {
     if ($MaxUsers -gt 0) {
         Write-Log "Maximum users limit set to: $MaxUsers" "INFO"
     }
+    if ($ForceAllUsers) {
+        Write-Log "ForceAllUsers mode enabled - will attempt multiple methods to retrieve all users" "INFO"
+    }
+    if ($UseGraphAPI) {
+        Write-Log "UseGraphAPI mode enabled - will try Graph API method first" "INFO"
+    }
+    if ($UseProjectBased) {
+        Write-Log "UseProjectBased mode enabled - will collect users via project memberships" "INFO"
+    }
+    if ($ShowUsersWithoutProjects) {
+        Write-Log "ShowUsersWithoutProjects mode enabled - will identify users with no project assignments" "INFO"
+    }
     
-    $vsaexOrgUrl = $orgUrl -replace "https://dev\.azure\.com/", "https://vsaex.dev.azure.com/"
-    $users = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $SkipPagination -MaxUsers $MaxUsers
-    Write-Log "Found $($users.Count) users" "SUCCESS"
+    $users = @()
+    $allEntitlementUsers = @()
+    
+    # If ShowUsersWithoutProjects is enabled, we need both datasets
+    if ($ShowUsersWithoutProjects) {
+        Write-Log "Collecting users from both entitlements API and project memberships for comparison..." "INFO"
+        
+        # First get users from entitlements API (with SkipPagination to avoid 500 errors)
+        $vsaexOrgUrl = $orgUrl -replace "https://dev\.azure\.com/", "https://vsaex.dev.azure.com/"
+        Write-Log "Getting users from entitlements API (first batch only to avoid pagination errors)..." "INFO"
+        $allEntitlementUsers = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $true -MaxUsers 0 -ForceAllUsers $false
+        Write-Log "Found $($allEntitlementUsers.Count) users in entitlements API" "SUCCESS"
+        
+        # Then get users from project memberships
+        Write-Log "Retrieving projects for project-based user collection..." "INFO"
+        $projects = Get-Projects -OrgUrl $orgUrl -Headers $headers
+        Write-Log "Found $($projects.Count) projects" "SUCCESS"
+        
+        if ($projects.Count -gt 0) {
+            $projectUsers = Get-AllUsersViaProjects -OrgUrl $orgUrl -Headers $headers -Projects $projects
+            Write-Log "Found $($projectUsers.Count) users with project assignments" "SUCCESS"
+            
+            # Create a set of user IDs from project memberships for comparison
+            $projectUserIds = @{}
+            foreach ($projUser in $projectUsers) {
+                if ($projUser.id) {
+                    $projectUserIds[$projUser.id] = $true
+                }
+            }
+            
+            # Identify users without projects by comparing entitlements vs project users
+            $usersWithoutProjects = @()
+            foreach ($entitlementUser in $allEntitlementUsers) {
+                if ($entitlementUser.id -and -not $projectUserIds.ContainsKey($entitlementUser.id)) {
+                    $usersWithoutProjects += $entitlementUser
+                }
+            }
+            
+            Write-Log "Found $($usersWithoutProjects.Count) users with NO project assignments" "SUCCESS"
+            Write-Log "Found $($projectUsers.Count) users WITH project assignments" "SUCCESS"
+            
+            # Combine all users for the final export
+            $users = $allEntitlementUsers
+        }
+        else {
+            Write-Log "No projects found - cannot compare project memberships" "ERROR"
+            $users = $allEntitlementUsers
+        }
+    }
+    # If UseProjectBased is enabled, skip entitlements API entirely
+    elseif ($UseProjectBased) {
+        # Get projects first
+        Write-Log "Retrieving projects for project-based user collection..." "INFO"
+        $projects = Get-Projects -OrgUrl $orgUrl -Headers $headers
+        Write-Log "Found $($projects.Count) projects" "SUCCESS"
+        
+        if ($projects.Count -gt 0) {
+            $users = Get-AllUsersViaProjects -OrgUrl $orgUrl -Headers $headers -Projects $projects
+        }
+        else {
+            Write-Log "No projects found - cannot use project-based collection" "ERROR"
+            throw "No projects available for user collection"
+        }
+    }
+    else {
+        $vsaexOrgUrl = $orgUrl -replace "https://dev\.azure\.com/", "https://vsaex.dev.azure.com/"
+        
+        # Try Graph API method first if requested
+        if ($UseGraphAPI) {
+            $users = Get-UsersViaGraph -OrgUrl $orgUrl -Headers $headers
+            if ($users.Count -eq 0) {
+                Write-Log "Graph API method failed, falling back to entitlements API" "WARNING"
+            }
+        }
+        
+        # Use standard entitlements API if Graph API wasn't used or failed
+        if ($users.Count -eq 0) {
+            $users = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $SkipPagination -MaxUsers $MaxUsers -ForceAllUsers $ForceAllUsers
+        }
+        
+        # If we still don't have many users and ForceAllUsers is enabled, try project-based approach
+        if ($ForceAllUsers -and $users.Count -lt 100) {
+            Write-Log "Primary method returned few users, attempting project-based user collection..." "INFO"
+            
+            # Get projects first
+            $projects = Get-Projects -OrgUrl $orgUrl -Headers $headers
+            if ($projects.Count -gt 0) {
+                $projectUsers = Get-AllUsersViaProjects -OrgUrl $orgUrl -Headers $headers -Projects $projects
+                
+                if ($projectUsers.Count -gt $users.Count) {
+                    Write-Log "Project-based method found more users ($($projectUsers.Count) vs $($users.Count)). Using project-based results." "SUCCESS"
+                    $users = $projectUsers
+                }
+            }
+        }
+    }
+    
+    Write-Log "Final user count: $($users.Count)" "SUCCESS"
     
     if ($SkipPagination -and $users.Count -gt 0) {
         Write-Log "Note: SkipPagination was used - there may be more users in the organization" "WARNING"
+    }
+    
+    if ($users.Count -lt 100 -and -not $SkipPagination -and -not $ForceAllUsers) {
+        Write-Log "Retrieved fewer than 100 users. Consider using -ForceAllUsers for large organizations" "WARNING"
     }
     
     # Get all projects
@@ -345,11 +705,23 @@ try {
             "Unknown License" 
         }
         
-        # Get projects for this user with null safety
-        $userProjects = if ($userProjectMapping.ContainsKey($userId) -and $userProjectMapping[$userId].Count -gt 0) {
-            $userProjectMapping[$userId] -join "; "
-        } else {
-            "No project assignments"
+        # Get projects for this user - handle both project mapping and direct project data
+        $userProjects = ""
+        
+        # If user has projects array (from project-based collection)
+        if ($user.projects -and $user.projects.Count -gt 0) {
+            $userProjects = $user.projects -join "; "
+        }
+        # Otherwise use the project mapping approach
+        elseif ($userProjectMapping.ContainsKey($userId) -and $userProjectMapping[$userId].Count -gt 0) {
+            $userProjects = $userProjectMapping[$userId] -join "; "
+        }
+        else {
+            if ($ShowUsersWithoutProjects) {
+                $userProjects = "*** NO PROJECT ASSIGNMENTS ***"
+            } else {
+                $userProjects = "No project assignments"
+            }
         }
         
         $csvData += [PSCustomObject]@{
@@ -368,12 +740,27 @@ try {
     # Export to CSV
     Write-Log "Exporting to CSV: $csvPath" "INFO"
     $csvData | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
-    
+
+    # If ShowUsersWithoutProjects or ExportUsersWithoutProjects is enabled, create separate file for users without projects
+    if ($ShowUsersWithoutProjects -or $ExportUsersWithoutProjects) {
+        $usersWithoutProjectsCsv = $csvData | Where-Object { $_."Project Names" -eq "*** NO PROJECT ASSIGNMENTS ***" }
+        
+        if ($usersWithoutProjectsCsv.Count -gt 0) {
+            $noProjectsFileName = "devops-users-NO-PROJECTS-$timestamp.csv"
+            $noProjectsPath = Join-Path $OutputPath $noProjectsFileName
+            
+            Write-Log "Exporting users without projects to: $noProjectsPath" "INFO"
+            $usersWithoutProjectsCsv | Export-Csv -Path $noProjectsPath -NoTypeInformation -Encoding UTF8
+            Write-Log "Users without projects exported: $($usersWithoutProjectsCsv.Count)" "SUCCESS"
+            Write-Log "No-projects file: $noProjectsPath" "SUCCESS"
+        } else {
+            Write-Log "No users without project assignments found" "INFO"
+        }
+    }
+
     Write-Log "Export completed successfully!" "SUCCESS"
     Write-Log "Total users exported: $($csvData.Count)" "SUCCESS"
-    Write-Log "Output file: $csvPath" "SUCCESS"
-    
-}
+    Write-Log "Output file: $csvPath" "SUCCESS"}
 catch {
     Write-Log "Script execution failed: $($_.Exception.Message)" "ERROR"
     Write-Log "Stack trace: $($_.ScriptStackTrace)" "ERROR"
