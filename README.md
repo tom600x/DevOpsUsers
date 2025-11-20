@@ -1,53 +1,128 @@
-# DevOps Users Export Tool
+# Azure DevOps User Reporting Scripts
 
-A PowerShell script to extract and report on Azure DevOps Services users, their project assignments, and license levels.
+This project provides PowerShell scripts to extract and report on Azure DevOps Services users, their project assignments, and license levels. The solution uses a two-script approach to handle large organizations and API limitations effectively.
 
-## Overview
+## Quick Start
 
-This tool generates CSV reports containing:
-- User names and email addresses
-- Project assignments for each user
-- License levels (Basic, Basic + Test Plans, Visual Studio Professional, etc.)
-- Timestamped output files for tracking
+### Two-Script Approach
+
+This solution uses two separate scripts for optimal reliability:
+
+1. **`Get-DevOpsUsersAndProjects.ps1`** - Collects all users and project assignments
+2. **`Update-DevOpsUserLicenses.ps1`** - Enhances the CSV with license information
+
+### Basic Usage
+
+```powershell
+# Step 1: Collect users and projects
+.\Get-DevOpsUsersAndProjects.ps1 -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "your-pat-here"
+
+# Step 2: Add license information
+.\Update-DevOpsUserLicenses.ps1 -CsvFilePath ".\output\devops-users-projects-2025-11-13-1410.csv" -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "your-pat-here"
+```
+
+## Scripts Overview
+
+### Get-DevOpsUsersAndProjects.ps1
+
+**Purpose**: Reliably collects all users and their project assignments without license information.
+
+**Key Features**:
+- Project-based user enumeration (works with large organizations)
+- Handles users with and without project assignments
+- No license API dependencies (more reliable)
+- Comprehensive error handling
+
+**Parameters**:
+- `OrganizationUrl` (Required): Azure DevOps organization URL
+- `PersonalAccessToken` (Required): PAT with User Entitlements and Project permissions
+- `OutputPath` (Optional): Output directory (default: "output")
+- `ShowUsersWithoutProjects` (Optional): Include users without projects in main CSV
+- `ExportUsersWithoutProjects` (Optional): Create separate CSV for users without projects
+
+**Output**: 
+- `devops-users-projects-YYYY-MM-DD-HHMM.csv` - Main user and project data
+- `devops-users-NO-PROJECTS-YYYY-MM-DD-HHMM.csv` - Users without projects (if requested)
+
+### Update-DevOpsUserLicenses.ps1
+
+**Purpose**: Enhances existing CSV files with license information from the Azure DevOps API.
+
+**Key Features**:
+- Reads CSV files created by the first script
+- Multiple retry strategies for API reliability
+- Batch processing with configurable batch sizes
+- Detailed progress reporting and statistics
+
+**Parameters**:
+- `CsvFilePath` (Required): Path to CSV file from first script
+- `OrganizationUrl` (Required): Azure DevOps organization URL
+- `PersonalAccessToken` (Required): PAT with User Entitlements permissions
+- `OutputPath` (Optional): Output directory (default: same as input)
+- `BatchSize` (Optional): API batch size (default: 100)
+- `MaxRetries` (Optional): Maximum retry attempts (default: 3)
+
+**Output**: 
+- `[original-filename]-LICENSED-YYYY-MM-DD-HHMM.csv` - Enhanced with license data
+
+### Get-UsersWithLicenseNoProjects.ps1
+
+**Purpose**: Basic license optimization analysis to identify users with licenses but no project assignments.
+
+**Key Features**:
+- Identifies licensed users without project assignments
+- Calculates potential cost savings
+- Provides license hierarchy and cost estimates
+- Simple optimization recommendations
+
+**Parameters**:
+- `CsvFilePath` (Required): Path to licensed CSV file
+- `OutputPath` (Optional): Output directory (default: "output")
+
+**Output**: 
+- `users-with-license-no-projects-YYYY-MM-DD-HHMM.csv` - Users with licenses but no projects
+
+### Get-LicenseOptimizationReport.ps1
+
+**Purpose**: Advanced license optimization analysis with comprehensive cost management insights.
+
+**Key Features**:
+- Multiple analysis types: NoProjects, MinimalProjects, LicenseOptimization, All
+- Detailed cost calculations for each license type
+- Potential savings identification with priority rankings
+- Utilization assessments and recommendations
+- Comprehensive reporting with monthly/annual cost estimates
+
+**Parameters**:
+- `CsvFilePath` (Required): Path to licensed CSV file
+- `AnalysisType` (Optional): Type of analysis - "NoProjects", "MinimalProjects", "LicenseOptimization", "All" (default: "All")
+- `MaxProjectsForMinimal` (Optional): Max projects considered "minimal" (default: 2)
+- `HighValueLicensesOnly` (Optional): Focus only on expensive licenses (default: false)
+- `OutputPath` (Optional): Output directory (default: "output")
+
+**Output**: 
+- `license-optimization-report-YYYY-MM-DD-HHMM.csv` - Detailed optimization opportunities
+- `license-usage-summary-YYYY-MM-DD-HHMM.csv` - License usage and cost summary
 
 ## Prerequisites
 
-### PowerShell Requirements
-- **PowerShell 5.1** or **PowerShell 7+** (recommended)
-- No additional PowerShell modules required (uses built-in `Invoke-RestMethod`)
+### PowerShell Version
+- PowerShell 5.1 or later
+- Works with both Windows PowerShell and PowerShell Core
 
-### Azure DevOps Requirements
-- Azure DevOps Services organization (cloud)
-- Personal Access Token (PAT) with appropriate permissions
+### Azure DevOps Permissions
+Create a Personal Access Token (PAT) with these permissions:
+- **User Entitlements**: Read
+- **Project and Team**: Read
 
-## Personal Access Token (PAT) Setup
-
-### Required Permissions
-Your PAT token must have the following permissions:
-
-| Permission Area | Required Access Level | Purpose |
-|---|---|---|
-| **User Profile** | Read | Access user information and email addresses |
-| **Project and Team** | Read | List projects and team memberships |
-| **Member Entitlement Management** | Read | Access user license information and entitlements |
-
-### Creating a PAT Token
-
-1. **Navigate to Azure DevOps**
-   - Go to your Azure DevOps organization: `https://dev.azure.com/YourOrganization`
-
-2. **Access Personal Access Tokens**
-   - Click on your profile picture (top right)
-   - Select "Personal access tokens"
-
-3. **Create New Token**
-   - Click "New Token"
-   - Provide a name (e.g., "DevOps Users Export")
-   - Set expiration date
-   - Select the required scopes:
-     - ✅ **User Profile (Read)**
-     - ✅ **Project and Team (Read)**
-     - ✅ **Member Entitlement Management (Read)**
+### PAT Creation Steps
+1. Go to Azure DevOps → User Settings → Personal Access Tokens
+2. Click "New Token"
+3. Set appropriate expiration
+4. Select required scopes:
+   - User Entitlements (Read)
+   - Project and Team (Read)
+5. Copy the generated token
 
 4. **Copy and Secure Token**
    - ⚠️ **Important**: Copy the token immediately - you won't be able to see it again
@@ -391,6 +466,98 @@ Found 2 users with NO project assignments:
 **Missing user information**:
 - Script now handles missing display names, emails, and license info gracefully
 - Missing data is replaced with descriptive placeholders
+
+## Complete Workflow Examples
+
+### Standard Two-Script Workflow
+
+**Step 1: Collect Users and Projects**
+```powershell
+# Collect all users and their project assignments
+.\Get-DevOpsUsersAndProjects.ps1 -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "your-pat-here"
+```
+
+**Step 2: Add License Information**
+```powershell
+# Enhance the CSV with license data
+.\Update-DevOpsUserLicenses.ps1 -CsvFilePath ".\output\devops-users-projects-2025-11-14-1128.csv" -OrganizationUrl "https://dev.azure.com/YourOrg" -PersonalAccessToken "your-pat-here"
+```
+
+**Expected Output:**
+- `devops-users-projects-2025-11-14-1128.csv` (users and projects)
+- `devops-users-projects-2025-11-14-1128-LICENSED-2025-11-14-1129.csv` (enhanced with licenses)
+
+### Complete License Optimization Workflow
+
+**Step 3: Basic License Analysis**
+```powershell
+# Find users with licenses but no projects
+.\Get-UsersWithLicenseNoProjects.ps1 -CsvFilePath ".\output\devops-users-projects-2025-11-14-1128-LICENSED-2025-11-14-1129.csv"
+```
+
+**Step 4: Advanced License Optimization**
+```powershell
+# Comprehensive license optimization analysis
+.\Get-LicenseOptimizationReport.ps1 -CsvFilePath ".\output\devops-users-projects-2025-11-14-1128-LICENSED-2025-11-14-1129.csv" -AnalysisType "All"
+```
+
+**Expected Output:**
+- `users-with-license-no-projects-2025-11-14-1135.csv` (basic analysis)
+- `license-optimization-report-2025-11-14-1138.csv` (detailed optimization opportunities)
+- `license-usage-summary-2025-11-14-1138.csv` (cost analysis and usage summary)
+
+### Real-World Results Example
+
+**HHSDC Organization Analysis (804 users processed):**
+
+**License Distribution:**
+- Visual Studio Enterprise: 346 users ($86,500/month)
+- Basic + Test Plans: 191 users ($9,932/month)
+- Visual Studio Professional: 41 users ($1,845/month)
+- Stakeholder: 117 users (free)
+- Other licenses: 109 users
+
+**Optimization Opportunities:**
+- Total opportunities found: 519 users
+- Potential monthly savings: $73,325
+- Potential annual savings: $879,900
+- Average projects per user: 2.4
+
+**Key Insights:**
+- 518 users with minimal project assignments (potential downgrades)
+- 1 stakeholder user with many projects (potential upgrade)
+- High-value licenses with low utilization identified
+- Cost-effective license redistribution recommendations
+
+### Analysis Type Options
+
+**NoProjects Analysis:**
+```powershell
+.\Get-LicenseOptimizationReport.ps1 -CsvFilePath "data.csv" -AnalysisType "NoProjects"
+```
+- Focuses only on users with licenses but no project assignments
+- Immediate cost-saving opportunities
+
+**MinimalProjects Analysis:**
+```powershell
+.\Get-LicenseOptimizationReport.ps1 -CsvFilePath "data.csv" -AnalysisType "MinimalProjects" -MaxProjectsForMinimal 3
+```
+- Identifies users with expensive licenses but limited project work
+- Adjustable threshold for "minimal" projects
+
+**LicenseOptimization Analysis:**
+```powershell
+.\Get-LicenseOptimizationReport.ps1 -CsvFilePath "data.csv" -AnalysisType "LicenseOptimization" -HighValueLicensesOnly
+```
+- Comprehensive analysis of license utilization patterns
+- Option to focus only on expensive licenses
+
+**All Analysis (Recommended):**
+```powershell
+.\Get-LicenseOptimizationReport.ps1 -CsvFilePath "data.csv" -AnalysisType "All"
+```
+- Complete analysis including all optimization types
+- Comprehensive reporting with priority rankings
 
 ## API Endpoints Used
 

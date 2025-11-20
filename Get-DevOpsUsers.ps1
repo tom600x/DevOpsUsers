@@ -572,8 +572,24 @@ try {
             Write-Log "Found $($usersWithoutProjects.Count) users with NO project assignments" "SUCCESS"
             Write-Log "Found $($projectUsers.Count) users WITH project assignments" "SUCCESS"
             
-            # Combine all users for the final export
-            $users = $allEntitlementUsers
+            # Create license lookup from entitlements data
+            $licenseLookup = @{}
+            foreach ($entUser in $allEntitlementUsers) {
+                if ($entUser.id -and $entUser.accessLevel.licenseDisplayName) {
+                    $licenseLookup[$entUser.id] = $entUser.accessLevel.licenseDisplayName
+                }
+            }
+            
+            # Enhance project users with license information from entitlements
+            foreach ($projUser in $projectUsers) {
+                if ($projUser.id -and $licenseLookup.ContainsKey($projUser.id)) {
+                    $projUser.accessLevel.licenseDisplayName = $licenseLookup[$projUser.id]
+                }
+            }
+            
+            # Combine project users (with licenses) and users without projects
+            $users = $projectUsers + $usersWithoutProjects
+            Write-Log "Combined dataset: $($users.Count) total users with license information preserved" "SUCCESS"
         }
         else {
             Write-Log "No projects found - cannot compare project memberships" "ERROR"
@@ -589,6 +605,103 @@ try {
         
         if ($projects.Count -gt 0) {
             $users = Get-AllUsersViaProjects -OrgUrl $orgUrl -Headers $headers -Projects $projects
+            
+            # Try to enhance with license information from entitlements API (first batch only)
+            Write-Log "Attempting to enhance project-based data with license information..." "INFO"
+            try {
+                $vsaexOrgUrl = $orgUrl -replace "https://dev\.azure\.com/", "https://vsaex.dev.azure.com/"
+                
+                # Try to get more users by attempting multiple smaller batches
+                $allLicenseData = @{}
+                $batchSize = 50
+                $maxAttempts = 5
+                $totalLicenseUsers = 0
+                
+                for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                    try {
+                        Write-Log "Attempting to retrieve license batch $attempt of $maxAttempts..." "INFO"
+                        
+                        # Try with different approaches for each batch
+                        if ($attempt -eq 1) {
+                            # First attempt: Standard entitlements call
+                            $batchUsers = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $true -MaxUsers 0 -ForceAllUsers $false
+                        } 
+                        elseif ($attempt -eq 2) {
+                            # Second attempt: Try with smaller batch size
+                            $batchUsers = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $false -MaxUsers $batchSize -ForceAllUsers $false
+                        }
+                        elseif ($attempt -eq 3) {
+                            # Third attempt: Try with ForceAllUsers but limited
+                            $batchUsers = Get-UserEntitlements -OrgUrl $vsaexOrgUrl -Headers $headers -SkipPagination $false -MaxUsers ($batchSize * 2) -ForceAllUsers $true
+                        }
+                        elseif ($attempt -eq 4) {
+                            # Fourth attempt: Try Graph API approach
+                            try {
+                                $batchUsers = Get-UsersViaGraph -OrgUrl $orgUrl -Headers $headers
+                            } catch {
+                                Write-Log "Graph API attempt failed: $($_.Exception.Message)" "WARNING"
+                                $batchUsers = @()
+                            }
+                        }
+                        else {
+                            # Final attempt: Try a different API endpoint approach
+                            try {
+                                # Try organization users endpoint
+                                $orgUsersUri = "$vsaexOrgUrl/_apis/graph/users?api-version=7.0"
+                                $orgUsersResponse = Invoke-DevOpsRestMethod -Uri $orgUsersUri -Headers $headers
+                                $batchUsers = $orgUsersResponse.value
+                            } catch {
+                                Write-Log "Organization users API attempt failed: $($_.Exception.Message)" "WARNING"
+                                $batchUsers = @()
+                            }
+                        }
+                        
+                        if ($batchUsers -and $batchUsers.Count -gt 0) {
+                            $newLicenses = 0
+                            foreach ($user in $batchUsers) {
+                                if ($user.id -and $user.accessLevel.licenseDisplayName -and -not $allLicenseData.ContainsKey($user.id)) {
+                                    $allLicenseData[$user.id] = $user.accessLevel.licenseDisplayName
+                                    $newLicenses++
+                                }
+                            }
+                            
+                            $totalLicenseUsers += $newLicenses
+                            Write-Log "Batch $attempt retrieved $newLicenses new license records. Total: $totalLicenseUsers" "SUCCESS"
+                            
+                            # If we got a good batch, continue
+                            if ($newLicenses -gt 0) {
+                                Start-Sleep -Seconds 1  # Brief pause between attempts
+                            }
+                        } else {
+                            Write-Log "Batch $attempt returned no users" "WARNING"
+                        }
+                        
+                    } catch {
+                        Write-Log "Batch $attempt failed: $($_.Exception.Message)" "WARNING"
+                    }
+                }
+                
+                Write-Log "Total license records collected: $totalLicenseUsers from $maxAttempts attempts" "INFO"
+                
+                if ($allLicenseData.Count -gt 0) {
+                    # Enhance project users with all collected license information
+                    $licensesFound = 0
+                    foreach ($projUser in $users) {
+                        if ($projUser.id -and $allLicenseData.ContainsKey($projUser.id)) {
+                            $projUser.accessLevel.licenseDisplayName = $allLicenseData[$projUser.id]
+                            $licensesFound++
+                        }
+                    }
+                    
+                    Write-Log "Enhanced $licensesFound users with license information from multiple API attempts" "SUCCESS"
+                } else {
+                    Write-Log "No license information could be retrieved from any API method" "WARNING"
+                }
+            }
+            catch {
+                Write-Log "Could not retrieve license information: $($_.Exception.Message)" "WARNING"
+                Write-Log "Continuing with project-based data only (licenses will show as 'Unknown')" "INFO"
+            }
         }
         else {
             Write-Log "No projects found - cannot use project-based collection" "ERROR"
